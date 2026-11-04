@@ -3,7 +3,6 @@ from pathlib import Path
 import chromadb
 from flask import Flask, request, jsonify, render_template_string
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
 from google import genai
 
 ROOT=Path(__file__).parent
