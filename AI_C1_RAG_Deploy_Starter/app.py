@@ -4,6 +4,7 @@ import chromadb
 from flask import Flask, request, jsonify, render_template_string
 from pypdf import PdfReader
 from google import genai
+from google.genai import types
 
 ROOT=Path(__file__).parent
 DATA=ROOT/"real_estate_data"
@@ -12,8 +13,21 @@ NAME="internship_document_qa"
 KEY=os.getenv("GEMINI_API_KEY")
 MODEL=os.getenv("GEMINI_MODEL","gemini-2.5-flash")
 app=Flask(__name__)
-print("Loading embedding model...")
-embedder=SentenceTransformer("all-MiniLM-L6-v2")
+
+EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
+gemini = genai.Client(api_key=KEY)
+
+def make_embeddings(texts, task_type):
+    result = gemini.models.embed_content(
+        model=EMBED_MODEL,
+        contents=texts,
+        config=types.EmbedContentConfig(
+            task_type=task_type,
+            output_dimensionality=768
+        )
+    )
+    return [item.values for item in result.embeddings]
+
 client=chromadb.PersistentClient(path=str(DB))
 collection=client.get_or_create_collection(NAME)
 
@@ -48,7 +62,7 @@ def index_docs():
     for i in range(0,len(texts),64):
         batch=texts[i:i+64]
         collection.add(ids=ids[i:i+64],documents=batch,metadatas=metas[i:i+64],
-            embeddings=embedder.encode(batch,normalize_embeddings=True).tolist())
+            embeddings=make_embeddings(batch, "RETRIEVAL_DOCUMENT")
     print("Indexed chunks:",collection.count())
 index_docs()
 
@@ -74,9 +88,11 @@ def ask():
     q=str((request.get_json(silent=True) or {}).get("question","")).strip()
     if not q:return jsonify(error="Question is required"),400
     if not KEY:return jsonify(error="Set GEMINI_API_KEY in host environment settings"),503
+    if collection.count() == 0:
+        index_docs()
     if not collection.count():return jsonify(error="No indexed PDF/TXT documents found in real_estate_data"),503
     try:
-        v=embedder.encode(q,normalize_embeddings=True).tolist()
+        v=make_embeddings([q], "RETRIEVAL_QUERY")[0]
         r=collection.query(query_embeddings=[v],n_results=min(4,collection.count()),include=["documents","metadatas"])
         docs=r["documents"][0]; metas=r["metadatas"][0]
         sources=[{"source":m.get("source","Unknown"),"page":m.get("page","N/A")} for m in metas]
